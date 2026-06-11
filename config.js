@@ -16,7 +16,7 @@ const config = {
     timeZone: process.env.TIMEZONE || 'Africa/Nairobi',
     // Links
     channelLink: process.env.CHANNEL_LINK || 'https://whatsapp.com/channel/0029VbBaJvI7IUYbtCeaPh0I',
-    updateZipUrl: process.env.UPDATE_URL || 'https://github.com/Amon3Dev/AMON-MD/archive/refs/heads/main.zip',
+    updateZipUrl: process.env.UPDATE_URL || 'https://github.com/thaghiskbskkns/AMON-MD/archive/refs/heads/main.zip',
     ytChannel: process.env.YT_CHANNEL || 'amontech254',
     // Session
     sessionId: process.env.SESSION_ID || '',
