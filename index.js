@@ -23,8 +23,19 @@ import { printLog } from './lib/print.js';
 import { writeErrorLog } from './lib/logger.js';
 import { handleMessages, handleGroupParticipantUpdate, handleStatus, handleCall } from './lib/messageHandler.js';
 import commandHandler from './lib/commandHandler.js';
+import express from 'express';
 
-// ========== NEWSLETTER CONTEXT INFO (to be added to all messages) ==========
+// ========== MULTI-USER API ==========
+const userApp = express();
+userApp.use(express.json());
+userApp.use(express.urlencoded({ extended: true }));
+userApp.use(express.static('public'));
+
+// Store multiple user sessions
+global.userSessions = new Map();
+global.userStatus = new Map();
+
+// ========== NEWSLETTER CONTEXT INFO ==========
 const NEWSLETTER_CONTEXT = {
     forwardingScore: 999,
     isForwarded: true,
@@ -35,7 +46,202 @@ const NEWSLETTER_CONTEXT = {
     }
 };
 
-// ========== FANCY STYLE FUNCTIONS (same as menu) ==========
+// ========== HTML PAIRING PAGE ==========
+const PAIRING_PAGE = `<!DOCTYPE html>
+<html>
+<head>
+    <title>AMON-MD Bot Pairing</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 { color: #667eea; margin-bottom: 10px; }
+        .subtitle { color: #666; margin-bottom: 30px; }
+        input {
+            width: 100%;
+            padding: 15px;
+            margin: 10px 0;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+            transition: transform 0.2s;
+        }
+        button:hover { transform: translateY(-2px); }
+        .code-display {
+            background: #f0f0f0;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            display: none;
+        }
+        .code { font-size: 32px; letter-spacing: 5px; font-weight: bold; color: #667eea; }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 10px;
+            display: none;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .loading { background: #d1ecf1; color: #0c5460; }
+        footer { margin-top: 30px; color: #999; font-size: 12px; }
+        .users-list {
+            margin-top: 20px;
+            text-align: left;
+            border-top: 1px solid #eee;
+            padding-top: 20px;
+        }
+        .users-list h3 { color: #667eea; margin-bottom: 10px; }
+        .user-item {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            font-size: 14px;
+        }
+        .online { color: green; font-weight: bold; }
+        .offline { color: red; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 AMON-MD Bot</h1>
+        <div class="subtitle">Connect your WhatsApp to the bot</div>
+        
+        <input type="text" id="phoneNumber" placeholder="Enter your WhatsApp number" />
+        <small style="color:#999;">Example: 254759006509 (no + or spaces)</small>
+        <button onclick="pairBot()">Connect Bot</button>
+        
+        <div id="codeDisplay" class="code-display"></div>
+        <div id="status" class="status"></div>
+        
+        <div class="users-list">
+            <h3>📱 Connected Users</h3>
+            <div id="usersList">Loading...</div>
+        </div>
+        
+        <footer>© 2024 AMON-MD | Multi-User WhatsApp Bot</footer>
+    </div>
+
+    <script>
+        async function pairBot() {
+            const phoneNumber = document.getElementById('phoneNumber').value;
+            if (!phoneNumber) {
+                showStatus('Please enter your phone number', 'error');
+                return;
+            }
+            
+            showStatus('Requesting pairing code...', 'loading');
+            
+            try {
+                const response = await fetch('/api/pair', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phoneNumber })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('codeDisplay').innerHTML = \`
+                        <strong>Your Pairing Code:</strong><br>
+                        <div class="code">\${data.code}</div>
+                        <small>Enter this code in WhatsApp → Linked Devices → Link with phone number</small>
+                    \`;
+                    document.getElementById('codeDisplay').style.display = 'block';
+                    showStatus('Code generated! Check your WhatsApp', 'success');
+                    checkStatus(data.sessionId || phoneNumber);
+                } else {
+                    showStatus(data.error || 'Failed to generate code', 'error');
+                }
+            } catch (error) {
+                showStatus('Network error. Try again.', 'error');
+            }
+        }
+        
+        async function checkStatus(sessionId) {
+            const interval = setInterval(async () => {
+                const response = await fetch('/api/status/' + sessionId);
+                const data = await response.json();
+                
+                if (data.connected) {
+                    clearInterval(interval);
+                    showStatus('✅ Bot connected successfully! You can now use commands.', 'success');
+                    document.getElementById('codeDisplay').innerHTML = '<strong>🎉 Connected!</strong><br>Your bot is ready to use.';
+                    loadUsers();
+                }
+            }, 3000);
+        }
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = 'status ' + type;
+            statusDiv.style.display = 'block';
+            setTimeout(() => {
+                if (type !== 'loading') {
+                    setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+                }
+            }, 1000);
+        }
+        
+        async function loadUsers() {
+            try {
+                const response = await fetch('/api/users');
+                const data = await response.json();
+                
+                if (data.users && data.users.length > 0) {
+                    const usersHtml = data.users.map(user => \`
+                        <div class="user-item">
+                            <span class="\${user.connected ? 'online' : 'offline'}">\${user.connected ? '🟢' : '🔴'}</span>
+                            <strong>\${user.phoneNumber || user.sessionId}</strong>
+                            <span style="float:right;font-size:11px;">\${user.connected ? 'Connected' : 'Disconnected'}</span>
+                        </div>
+                    \`).join('');
+                    document.getElementById('usersList').innerHTML = usersHtml;
+                } else {
+                    document.getElementById('usersList').innerHTML = '<div class="user-item">No users connected</div>';
+                }
+            } catch (error) {
+                document.getElementById('usersList').innerHTML = '<div class="user-item">Failed to load users</div>';
+            }
+        }
+        
+        loadUsers();
+        setInterval(loadUsers, 10000);
+    </script>
+</body>
+</html>`;
+
+// ========== FANCY STYLE FUNCTIONS ==========
 function getCurrentTime() {
     return new Date().toLocaleTimeString('en-US', {
         hour: '2-digit',
@@ -103,18 +309,15 @@ function buildConnectionMessage(botName, ghostStatus = '') {
     return message;
 }
 
-// ========== WRAPPER FUNCTION TO ADD NEWSLETTER CONTEXT TO ALL MESSAGES ==========
+// ========== WRAPPER FUNCTION TO ADD NEWSLETTER CONTEXT ==========
 function wrapWithNewsletter(sendFunction, sock, chatId, content, options = {}) {
     const originalSendMessage = sock.sendMessage.bind(sock);
     
-    // Override sendMessage to always include newsletter context
     sock.sendMessage = async (jid, messageContent, extraOptions = {}) => {
-        // Don't add newsletter context to status messages or internal messages
         if (jid === 'status@broadcast') {
             return originalSendMessage(jid, messageContent, extraOptions);
         }
         
-        // Add newsletter context to the message content
         if (messageContent.text && !messageContent.contextInfo) {
             messageContent.contextInfo = NEWSLETTER_CONTEXT;
         } else if (messageContent.text && messageContent.contextInfo) {
@@ -131,6 +334,158 @@ function wrapWithNewsletter(sendFunction, sock, chatId, content, options = {}) {
     return sendFunction;
 }
 
+// ========== MULTI-USER API ENDPOINTS ==========
+userApp.get('/', (req, res) => {
+    res.send(PAIRING_PAGE);
+});
+
+userApp.post('/api/pair', async (req, res) => {
+    const { phoneNumber } = req.body;
+    
+    if (!phoneNumber) {
+        return res.json({ success: false, error: "Phone number required" });
+    }
+    
+    const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
+    const sessionId = cleanNumber;
+    const sessionPath = `./Sessions/${sessionId}`;
+    
+    try {
+        if (global.userSessions.has(sessionId) && global.userSessions.get(sessionId).connected) {
+            return res.json({ success: true, alreadyConnected: true, message: "Bot already connected!" });
+        }
+        
+        if (!fs.existsSync(sessionPath)) {
+            fs.mkdirSync(sessionPath, { recursive: true });
+        }
+        
+        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+        const { version } = await fetchLatestBaileysVersion();
+        
+        const userSocket = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            browser: Browsers.macOS('Chrome'),
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+            },
+            markOnlineOnConnect: false,
+            generateHighQualityLinkPreview: true,
+        });
+        
+        userSocket.ev.on('creds.update', saveCreds);
+        
+        const code = await userSocket.requestPairingCode(cleanNumber);
+        const formattedCode = code?.match(/.{1,4}/g)?.join("-") || code;
+        
+        global.userSessions.set(sessionId, { 
+            socket: userSocket, 
+            connected: false,
+            phoneNumber: cleanNumber,
+            sessionPath,
+            user: null
+        });
+        
+        userSocket.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+            
+            if (connection === 'open') {
+                const session = global.userSessions.get(sessionId);
+                if (session) {
+                    session.connected = true;
+                    session.user = userSocket.user;
+                    global.userSessions.set(sessionId, session);
+                }
+                console.log(chalk.green(`✅ User ${cleanNumber} connected!`));
+                
+                // Send welcome message
+                const welcomeMsg = buildConnectionMessage(config.botName || 'AMON-MD', '');
+                await userSocket.sendMessage(`${cleanNumber}@s.whatsapp.net`, {
+                    text: welcomeMsg,
+                    contextInfo: NEWSLETTER_CONTEXT
+                }).catch(console.error);
+            }
+            
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                if (statusCode !== DisconnectReason.loggedOut && statusCode !== 401) {
+                    console.log(chalk.yellow(`🔄 Reconnecting user ${cleanNumber}...`));
+                    setTimeout(() => {
+                        if (global.userSessions.has(sessionId)) {
+                            // Attempt to reconnect
+                            global.userSessions.delete(sessionId);
+                        }
+                    }, 5000);
+                } else {
+                    console.log(chalk.red(`🚪 User ${cleanNumber} logged out`));
+                    global.userSessions.delete(sessionId);
+                }
+            }
+        });
+        
+        userSocket.ev.on('messages.upsert', async ({ messages }) => {
+            const msg = messages[0];
+            if (!msg.message) return;
+            if (msg.key.remoteJid === 'status@broadcast') return;
+            
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+            const fromJid = msg.key.remoteJid;
+            
+            // Simple command handler for multi-user
+            if (text === '.menu' || text === '.help') {
+                const menuText = `🤖 *${config.botName || 'AMON-MD'}* 🤖\n\n` +
+                    `📱 *Your Number:* ${cleanNumber}\n` +
+                    `✅ *Status:* Connected\n` +
+                    `📅 *Connected:* ${new Date().toLocaleString()}\n\n` +
+                    `*Commands Available:*\n` +
+                    `• .menu - Show this menu\n` +
+                    `• .ping - Check bot response\n` +
+                    `• .owner - Bot owner info\n` +
+                    `• .help - All commands\n\n` +
+                    `_Powered by AMON-MD Bot_`;
+                
+                await userSocket.sendMessage(fromJid, {
+                    text: menuText,
+                    contextInfo: NEWSLETTER_CONTEXT
+                });
+            } else if (text === '.ping') {
+                await userSocket.sendMessage(fromJid, {
+                    text: '🏓 Pong! Bot is active.',
+                    contextInfo: NEWSLETTER_CONTEXT
+                });
+            }
+        });
+        
+        res.json({ success: true, code: formattedCode, sessionId });
+        
+    } catch (error) {
+        console.error("Pairing error:", error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+userApp.get('/api/status/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    const session = global.userSessions.get(sessionId);
+    
+    res.json({
+        connected: session ? session.connected : false,
+        exists: session ? true : false,
+        phoneNumber: session?.phoneNumber || null
+    });
+});
+
+userApp.get('/api/users', (req, res) => {
+    const users = Array.from(global.userSessions.entries()).map(([id, data]) => ({
+        sessionId: id,
+        phoneNumber: data.phoneNumber,
+        connected: data.connected
+    }));
+    res.json({ users, total: users.length });
+});
+
+// ========== INITIAL SETUP ==========
 store.readFromFile();
 setInterval(() => store.writeToFile(), config.storeWriteInterval || 10000);
 
@@ -151,7 +506,7 @@ setInterval(() => {
 
 const phoneNumber = config.pairingNumber || config.ownerNumber || "254759006509";
 
-// Auto-create data directory and default files on startup
+// Auto-create data directory and default files
 const DATA_DEFAULTS = {
     'owner.json': [],
     'banned.json': [],
@@ -255,7 +610,7 @@ function hasValidSession() {
                 try {
                     rmSync(path.join(__dirname, 'session'), { recursive: true, force: true });
                 }
-                catch (_e) { /* ignore */ }
+                catch (_e) { }
                 return false;
             }
             printLog('success', '[AMON-MD] Valid and registered session credentials found');
@@ -307,6 +662,13 @@ server.listen(PORT, () => {
     printLog('success', `[AMON-MD] Server listening on port ${PORT}`);
 });
 
+// Start multi-user API on port 3001
+const USER_API_PORT = process.env.USER_API_PORT || 3001;
+userApp.listen(USER_API_PORT, () => {
+    console.log(chalk.green(`📱 Multi-User API running on http://localhost:${USER_API_PORT}`));
+    console.log(chalk.cyan(`🌐 Pairing Website: http://localhost:${USER_API_PORT}`));
+});
+
 async function startQasimDev() {
     try {
         const { version } = await fetchLatestBaileysVersion();
@@ -344,15 +706,12 @@ async function startQasimDev() {
 
         QasimDev.store = store;
 
-        // ========== WRAP SEND MESSAGE WITH NEWSLETTER CONTEXT ==========
         const originalSendMessage = QasimDev.sendMessage.bind(QasimDev);
         QasimDev.sendMessage = async (jid, content, options = {}) => {
-            // Don't add newsletter context to status messages
             if (jid === 'status@broadcast') {
                 return originalSendMessage(jid, content, options);
             }
             
-            // Add newsletter context to the message content
             if (content.text && !content.contextInfo) {
                 content.contextInfo = NEWSLETTER_CONTEXT;
             } else if (content.text && content.contextInfo) {
@@ -373,7 +732,6 @@ async function startQasimDev() {
         QasimDev.sendPresenceUpdate = async function (...args) {
             const ghostMode = await store.getSetting('global', 'stealthMode');
             if (ghostMode && ghostMode.enabled) {
-                printLog('info', '[AMON-MD] 👻 Blocked presence update (stealth mode)');
                 return;
             }
             return originalSendPresenceUpdate.apply(this, args);
@@ -442,12 +800,6 @@ async function startQasimDev() {
                 }
                 catch (err) {
                     printLog('error', `[AMON-MD] Error in handleMessages: ${err.message}`);
-                    if (mek.key && mek.key.remoteJid) {
-                        await QasimDev.sendMessage(mek.key.remoteJid, {
-                            text: '❌ An error occurred while processing your message.',
-                            contextInfo: NEWSLETTER_CONTEXT
-                        }).catch(console.error);
-                    }
                 }
             }
             catch (err) {
@@ -460,7 +812,7 @@ async function startQasimDev() {
                 return jid;
             if (/:\d+@/gi.test(jid)) {
                 const decode = jidDecode(jid) || {};
-                return decode.user && decode.server && `${decode.user }@${ decode.server}` || jid;
+                return decode.user && decode.server && `${decode.user}@${decode.server}` || jid;
             }
             else
                 return jid;
@@ -483,7 +835,7 @@ async function startQasimDev() {
                     v = store.contacts[id] || {};
                     if (!(v.name || v.subject))
                         v = QasimDev.groupMetadata(id) || {};
-                    resolve(v.name || v.subject || PhoneNumber(`+${ id.replace('@s.whatsapp.net', '')}`).number?.international);
+                    resolve(v.name || v.subject || PhoneNumber(`+${id.replace('@s.whatsapp.net', '')}`).number?.international);
                 });
             else
                 v = id === '0@s.whatsapp.net' ? {
@@ -492,7 +844,7 @@ async function startQasimDev() {
                 } : id === QasimDev.decodeJid(QasimDev.user.id) ?
                     QasimDev.user :
                     (store.contacts[id] || {});
-            return (withoutContact ? '' : v.name) || v.subject || v.verifiedName || PhoneNumber(`+${ jid.replace('@s.whatsapp.net', '')}`).number?.international;
+            return (withoutContact ? '' : v.name) || v.subject || v.verifiedName || PhoneNumber(`+${jid.replace('@s.whatsapp.net', '')}`).number?.international;
         };
 
         QasimDev.public = true;
@@ -518,7 +870,7 @@ async function startQasimDev() {
                 printLog('info', `[AMON-MD] Using default phone number: ${phoneNumberInput}`);
             }
             phoneNumberInput = phoneNumberInput.replace(/[^0-9]/g, '');
-            const pn = PhoneNumber(`+${ phoneNumberInput}`);
+            const pn = PhoneNumber(`+${phoneNumberInput}`);
             if (!pn.valid) {
                 printLog('error', '[AMON-MD] Invalid phone number format');
                 if (rl && !rlClosed)
@@ -541,7 +893,7 @@ async function startQasimDev() {
                         try {
                             rmSync('./session', { recursive: true, force: true });
                         }
-                        catch (_e) { /* ignore */ }
+                        catch (_e) { }
                         await delay(3000);
                         startQasimDev();
                     }
@@ -593,10 +945,10 @@ async function startQasimDev() {
                 if (ghostMode && ghostMode.enabled) {
                     printLog('info', '[AMON-MD] 👻 STEALTH MODE ACTIVE');
                 }
-                printLog('success', `[AMON-MD] Connected to => ${ JSON.stringify(QasimDev.user, null, 2)}`);
+                printLog('success', `[AMON-MD] Connected to => ${JSON.stringify(QasimDev.user, null, 2)}`);
                 
                 try {
-                    const botNumber = `${QasimDev.user.id.split(':')[0] }@s.whatsapp.net`;
+                    const botNumber = `${QasimDev.user.id.split(':')[0]}@s.whatsapp.net`;
                     const ghostStatus = (ghostMode && ghostMode.enabled) ? 'ACTIVE' : '';
                     const connectionMessage = buildConnectionMessage(config.botName || 'AMON-MD', ghostStatus);
                     
@@ -638,7 +990,7 @@ async function startQasimDev() {
                     try {
                         rmSync('./session', { recursive: true, force: true });
                     }
-                    catch (_e) { /* ignore */ }
+                    catch (_e) { }
                     await delay(3000);
                     startQasimDev();
                     return;
@@ -750,24 +1102,23 @@ folders.forEach(folder => {
     fs.readdirSync(folder)
         .filter(file => file.endsWith('.js'))
         .forEach(file => {
-        const filePath = path.join(folder, file);
-        try {
-            const code = fs.readFileSync(filePath, 'utf-8');
-            const err = syntaxerror(code, file, {
-                sourceType: 'module',
-                allowAwaitOutsideFunction: true
-            });
-            if (err) {
-                console.error(chalk.red(`❌ [AMON-MD] Syntax error in ${filePath}:\n${err}`));
+            const filePath = path.join(folder, file);
+            try {
+                const code = fs.readFileSync(filePath, 'utf-8');
+                const err = syntaxerror(code, file, {
+                    sourceType: 'module',
+                    allowAwaitOutsideFunction: true
+                });
+                if (err) {
+                    console.error(chalk.red(`❌ [AMON-MD] Syntax error in ${filePath}:\n${err}`));
+                }
             }
-        }
-        catch (e) {
-            console.error(chalk.yellow(`⚠️ [AMON-MD] Cannot read file ${filePath}:\n${e}`));
-        }
-    });
+            catch (e) {
+                console.error(chalk.yellow(`⚠️ [AMON-MD] Cannot read file ${filePath}:\n${e}`));
+            }
+        });
 });
 
-// Error handlers
 process.on('uncaughtException', (err) => {
     printLog('error', `[AMON-MD] Uncaught Exception: ${err.message}`);
     console.error(err.stack);
