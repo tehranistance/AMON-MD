@@ -24,6 +24,7 @@ import { printLog } from './lib/print.js';
 import { writeErrorLog } from './lib/logger.js';
 import { handleMessages, handleGroupParticipantUpdate, handleStatus, handleCall } from './lib/messageHandler.js';
 import commandHandler from './lib/commandHandler.js';
+
 // Create sessions directory for multi-users
 if (!fs.existsSync('./sessions')) {
     fs.mkdirSync('./sessions', { recursive: true });
@@ -36,7 +37,7 @@ import { app } from './lib/server.js';
 global.userSessions = new Map();
 global.startTime = Date.now();
 
-// Pairing endpoint
+// ========== FIXED PAIRING ENDPOINT ==========
 app.post('/api/pair', async (req, res) => {
     const { phoneNumber, serverId } = req.body;
     
@@ -48,10 +49,12 @@ app.post('/api/pair', async (req, res) => {
     const sessionPath = `./sessions/${cleanNumber}`;
     
     try {
+        // Check if already connected
         if (global.userSessions.has(cleanNumber) && global.userSessions.get(cleanNumber).connected) {
             return res.json({ success: true, alreadyConnected: true });
         }
         
+        // Create session directory
         if (!fs.existsSync(sessionPath)) {
             fs.mkdirSync(sessionPath, { recursive: true });
         }
@@ -59,31 +62,62 @@ app.post('/api/pair', async (req, res) => {
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const { version } = await fetchLatestBaileysVersion();
         
+        // Create socket with better settings for Render
         const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
-            browser: Browsers.macOS('Chrome'),
+            browser: ['AMON-MD', 'Chrome', '120.0.0.0'],
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
             },
             markOnlineOnConnect: false,
             generateHighQualityLinkPreview: true,
+            keepAliveIntervalMs: 30000,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
         });
         
         sock.ev.on('creds.update', saveCreds);
         
-        const code = await sock.requestPairingCode(cleanNumber);
+        // Keep connection alive
+        const keepAlive = setInterval(() => {
+            if (sock?.user) {
+                sock.sendPresenceUpdate('available').catch(() => {});
+            }
+        }, 20000);
         
+        // Request pairing code with retry logic
+        let code;
+        let retries = 0;
+        while (!code && retries < 3) {
+            try {
+                code = await sock.requestPairingCode(cleanNumber);
+                break;
+            } catch (err) {
+                retries++;
+                console.log(`Retry ${retries} for ${cleanNumber}`);
+                await delay(2000);
+                if (retries === 3) throw err;
+            }
+        }
+        
+        // Format code for display
+        const formattedCode = code?.match(/.{1,4}/g)?.join("-") || code;
+        
+        // Store session
         global.userSessions.set(cleanNumber, {
             socket: sock,
             connected: false,
             phoneNumber: cleanNumber,
-            serverId: serverId || 1
+            serverId: serverId || 1,
+            keepAlive: keepAlive
         });
         
+        // Handle connection events
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
+            
             if (connection === 'open') {
                 const session = global.userSessions.get(cleanNumber);
                 if (session) {
@@ -92,20 +126,36 @@ app.post('/api/pair', async (req, res) => {
                 }
                 printLog('success', `✅ User ${cleanNumber} connected!`);
                 
+                // Send welcome message
                 await sock.sendMessage(`${cleanNumber}@s.whatsapp.net`, {
-                    text: `🤖 *AMON-MD Bot Active*\n\n✅ Connected!\n📱 Your number: +${cleanNumber}\n\nType .menu for commands`
+                    text: `🤖 *AMON-MD Bot Active*\n\n✅ Connected!\n📱 Your number: +${cleanNumber}\n🕐 Time: ${new Date().toLocaleString()}\n\nType .menu for commands`
                 }).catch(console.error);
             }
+            
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                if (statusCode !== DisconnectReason.loggedOut && statusCode !== 401) {
+                console.log(`Connection closed for ${cleanNumber}, code: ${statusCode}`);
+                
+                if (statusCode === 515 || statusCode === 403) {
+                    // Session expired, clean up
+                    const session = global.userSessions.get(cleanNumber);
+                    if (session && session.keepAlive) {
+                        clearInterval(session.keepAlive);
+                    }
+                    global.userSessions.delete(cleanNumber);
+                } else if (statusCode !== DisconnectReason.loggedOut && statusCode !== 401) {
                     printLog('warning', `🔄 Reconnecting ${cleanNumber}...`);
                 } else {
+                    const session = global.userSessions.get(cleanNumber);
+                    if (session && session.keepAlive) {
+                        clearInterval(session.keepAlive);
+                    }
                     global.userSessions.delete(cleanNumber);
                 }
             }
         });
         
+        // Handle messages
         sock.ev.on('messages.upsert', async ({ messages }) => {
             const msg = messages[0];
             if (!msg.message) return;
@@ -116,39 +166,71 @@ app.post('/api/pair', async (req, res) => {
             
             if (text === '.menu' || text === '.help') {
                 await sock.sendMessage(fromJid, {
-                    text: `╭━━━⟮ AMON-MD ⟯━━━┈⊷\n┃✵ 🤖 *Bot Active*\n┃✵ 📱 *Your Number:* +${cleanNumber}\n┣━━━━━━━━━━━━━━━\n┃✵ 📝 *Commands:*\n┃✵ • .menu - Show menu\n┃✵ • .ping - Check status\n┃✵ • .owner - Bot info\n┗━━━━━━━━━━━━━━━`
+                    text: `╭━━━⟮ AMON-MD ⟯━━━┈⊷\n┃✵ 🤖 *Bot Active*\n┃✵ 📱 *Your Number:* +${cleanNumber}\n┃✵ 🕐 *Status:* Connected\n┣━━━━━━━━━━━━━━━\n┃✵ 📝 *Commands:*\n┃✵ • .menu - Show menu\n┃✵ • .ping - Check status\n┃✵ • .owner - Bot info\n┗━━━━━━━━━━━━━━━`
                 });
             } else if (text === '.ping') {
-                await sock.sendMessage(fromJid, { text: '🏓 Pong!' });
+                await sock.sendMessage(fromJid, { text: '🏓 Pong! Bot is active.' });
             }
         });
         
-        res.json({ success: true, code: code });
+        res.json({ success: true, code: formattedCode });
         
     } catch (error) {
-        printLog('error', `Pairing error: ${error.message}`);
+        printLog('error', `Pairing error for ${cleanNumber}: ${error.message}`);
         res.json({ success: false, error: error.message });
     }
 });
 
+// Status endpoint
 app.get('/api/status/:phoneNumber', (req, res) => {
     const { phoneNumber } = req.params;
     const session = global.userSessions.get(phoneNumber);
-    res.json({ connected: session ? session.connected : false });
+    res.json({ 
+        connected: session ? session.connected : false,
+        exists: session ? true : false
+    });
 });
 
+// Stats endpoint
 app.get('/api/stats', (req, res) => {
     const connectedUsers = Array.from(global.userSessions.values()).filter(s => s.connected).length;
-    res.json({ totalUsers: connectedUsers, version: 'v6.0', startTime: global.startTime });
+    res.json({ 
+        totalUsers: connectedUsers, 
+        totalSessions: global.userSessions.size,
+        version: 'v6.0', 
+        startTime: global.startTime,
+        uptime: process.uptime()
+    });
 });
 
+// Users list endpoint
 app.get('/api/users', (req, res) => {
     const users = Array.from(global.userSessions.entries()).map(([id, data]) => ({
         phoneNumber: id,
-        connected: data.connected
+        connected: data.connected,
+        connectedAt: data.connectedAt
     }));
     res.json({ users });
 });
+
+// Clean up old sessions (older than 7 days)
+setInterval(() => {
+    const sessionsDir = './sessions';
+    if (!fs.existsSync(sessionsDir)) return;
+    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    fs.readdir(sessionsDir, (err, folders) => {
+        if (err) return;
+        for (const folder of folders) {
+            const folderPath = path.join(sessionsDir, folder);
+            fs.stat(folderPath, (err, stats) => {
+                if (!err && stats.mtimeMs < sevenDaysAgo) {
+                    fs.rmSync(folderPath, { recursive: true, force: true });
+                    printLog('info', `🧹 Cleaned up old session: ${folder}`);
+                }
+            });
+        }
+    });
+}, 24 * 60 * 60 * 1000);
 
 // ========== NEWSLETTER CONTEXT INFO (to be added to all messages) ==========
 const NEWSLETTER_CONTEXT = {
@@ -233,14 +315,11 @@ function buildConnectionMessage(botName, ghostStatus = '') {
 function wrapWithNewsletter(sendFunction, sock, chatId, content, options = {}) {
     const originalSendMessage = sock.sendMessage.bind(sock);
     
-    // Override sendMessage to always include newsletter context
     sock.sendMessage = async (jid, messageContent, extraOptions = {}) => {
-        // Don't add newsletter context to status messages or internal messages
         if (jid === 'status@broadcast') {
             return originalSendMessage(jid, messageContent, extraOptions);
         }
         
-        // Add newsletter context to the message content
         if (messageContent.text && !messageContent.contextInfo) {
             messageContent.contextInfo = NEWSLETTER_CONTEXT;
         } else if (messageContent.text && messageContent.contextInfo) {
@@ -275,7 +354,7 @@ setInterval(() => {
     }
 }, 30000);
 
-const phoneNumber = config.pairingNumber || config.ownerNumber || "254759006509";
+const phoneNumber = config.pairingNumber || config.ownerNumber || "";
 
 // Auto-create data directory and default files on startup
 const DATA_DEFAULTS = {
@@ -381,7 +460,7 @@ function hasValidSession() {
                 try {
                     rmSync(path.join(__dirname, 'session'), { recursive: true, force: true });
                 }
-                catch (_e) { /* ignore */ }
+                catch (_e) { }
                 return false;
             }
             printLog('success', '[AMON-MD] Valid and registered session credentials found');
@@ -465,20 +544,17 @@ async function startQasimDev() {
             msgRetryCounterCache,
             defaultQueryTimeoutMs: 60000,
             connectTimeoutMs: 60000,
-            keepAliveIntervalMs: 10000,
+            keepAliveIntervalMs: 30000,
         });
 
         QasimDev.store = store;
 
-        // ========== WRAP SEND MESSAGE WITH NEWSLETTER CONTEXT ==========
         const originalSendMessage = QasimDev.sendMessage.bind(QasimDev);
         QasimDev.sendMessage = async (jid, content, options = {}) => {
-            // Don't add newsletter context to status messages
             if (jid === 'status@broadcast') {
                 return originalSendMessage(jid, content, options);
             }
             
-            // Add newsletter context to the message content
             if (content.text && !content.contextInfo) {
                 content.contextInfo = NEWSLETTER_CONTEXT;
             } else if (content.text && content.contextInfo) {
@@ -499,7 +575,6 @@ async function startQasimDev() {
         QasimDev.sendPresenceUpdate = async function (...args) {
             const ghostMode = await store.getSetting('global', 'stealthMode');
             if (ghostMode && ghostMode.enabled) {
-                printLog('info', '[AMON-MD] 👻 Blocked presence update (stealth mode)');
                 return;
             }
             return originalSendPresenceUpdate.apply(this, args);
@@ -586,7 +661,7 @@ async function startQasimDev() {
                 return jid;
             if (/:\d+@/gi.test(jid)) {
                 const decode = jidDecode(jid) || {};
-                return decode.user && decode.server && `${decode.user }@${ decode.server}` || jid;
+                return decode.user && decode.server && `${decode.user}@${decode.server}` || jid;
             }
             else
                 return jid;
@@ -609,7 +684,7 @@ async function startQasimDev() {
                     v = store.contacts[id] || {};
                     if (!(v.name || v.subject))
                         v = QasimDev.groupMetadata(id) || {};
-                    resolve(v.name || v.subject || PhoneNumber(`+${ id.replace('@s.whatsapp.net', '')}`).number?.international);
+                    resolve(v.name || v.subject || PhoneNumber(`+${id.replace('@s.whatsapp.net', '')}`).number?.international);
                 });
             else
                 v = id === '0@s.whatsapp.net' ? {
@@ -618,7 +693,7 @@ async function startQasimDev() {
                 } : id === QasimDev.decodeJid(QasimDev.user.id) ?
                     QasimDev.user :
                     (store.contacts[id] || {});
-            return (withoutContact ? '' : v.name) || v.subject || v.verifiedName || PhoneNumber(`+${ jid.replace('@s.whatsapp.net', '')}`).number?.international;
+            return (withoutContact ? '' : v.name) || v.subject || v.verifiedName || PhoneNumber(`+${jid.replace('@s.whatsapp.net', '')}`).number?.international;
         };
 
         QasimDev.public = true;
@@ -644,7 +719,7 @@ async function startQasimDev() {
                 printLog('info', `[AMON-MD] Using default phone number: ${phoneNumberInput}`);
             }
             phoneNumberInput = phoneNumberInput.replace(/[^0-9]/g, '');
-            const pn = PhoneNumber(`+${ phoneNumberInput}`);
+            const pn = PhoneNumber(`+${phoneNumberInput}`);
             if (!pn.valid) {
                 printLog('error', '[AMON-MD] Invalid phone number format');
                 if (rl && !rlClosed)
@@ -667,7 +742,7 @@ async function startQasimDev() {
                         try {
                             rmSync('./session', { recursive: true, force: true });
                         }
-                        catch (_e) { /* ignore */ }
+                        catch (_e) { }
                         await delay(3000);
                         startQasimDev();
                     }
@@ -719,10 +794,10 @@ async function startQasimDev() {
                 if (ghostMode && ghostMode.enabled) {
                     printLog('info', '[AMON-MD] 👻 STEALTH MODE ACTIVE');
                 }
-                printLog('success', `[AMON-MD] Connected to => ${ JSON.stringify(QasimDev.user, null, 2)}`);
+                printLog('success', `[AMON-MD] Connected to => ${JSON.stringify(QasimDev.user, null, 2)}`);
                 
                 try {
-                    const botNumber = `${QasimDev.user.id.split(':')[0] }@s.whatsapp.net`;
+                    const botNumber = `${QasimDev.user.id.split(':')[0]}@s.whatsapp.net`;
                     const ghostStatus = (ghostMode && ghostMode.enabled) ? 'ACTIVE' : '';
                     const connectionMessage = buildConnectionMessage(config.botName || 'AMON-MD', ghostStatus);
                     
@@ -764,7 +839,7 @@ async function startQasimDev() {
                     try {
                         rmSync('./session', { recursive: true, force: true });
                     }
-                    catch (_e) { /* ignore */ }
+                    catch (_e) { }
                     await delay(3000);
                     startQasimDev();
                     return;
