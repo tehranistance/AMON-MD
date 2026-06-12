@@ -66,7 +66,7 @@ app.post('/api/pair', async (req, res) => {
         const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
-            browser: ['AMON-MD', 'Chrome', '120.0.0.0'],
+            browser: Browsers.macOS('Chrome'),
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
