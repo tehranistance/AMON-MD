@@ -1,7 +1,7 @@
 {
   "name": "mega-md",
   "version": "6.0.0",
-  "description": "High performance multi-device WhatsApp bot",
+  "description": "High performance multi-device WhatsApp bot with multi-user support",
   "type": "module",
   "main": "index.js",
   "directories": {
@@ -29,10 +29,9 @@
     "whatsapp-bot",
     "baileys-bot",
     "Mega-Md",
-    "Suhail-Md",
+    "multi-user",
     "multi-device",
-    "nodejs-bot",
-    "javascript-bot"
+    "nodejs-bot"
   ],
   "homepage": "https://github.com/GlobalTechInfo/MEGA-MD",
   "repository": {
@@ -46,7 +45,7 @@
   "author": "Qasim Ali",
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^7.0.0-rc.13",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "acrcloud": "^1.4.0",
     "api-qasim": "^3.2.10",
     "awesome-phonenumber": "^5.9.0",
